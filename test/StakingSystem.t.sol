@@ -64,11 +64,9 @@ contract StakingSystemTest is Test {
     }
 
     function test_RequestUnstake() public {
-        dNFT.safeMint(user1);
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
+        stakeNft();
 
+        vm.startPrank(user1);
         vm.expectEmit(true, true, true, true);
         emit StakingSystem.UnstakeRequested(user1, 0, block.timestamp);
         stakingSystem.requestUnstake(0);
@@ -86,11 +84,7 @@ contract StakingSystemTest is Test {
     }
 
     function test_RequestUnstake_NotTokenOwner() public {
-        dNFT.safeMint(user1);
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
-        vm.stopPrank();
+        stakeNft();
 
         vm.startPrank(user2);
         vm.expectRevert(StakingSystem.NotTokenOwner.selector);
@@ -99,12 +93,7 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_NotTokenOwner() public {
-        dNFT.safeMint(user1);
-
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
-        vm.stopPrank();
+        stakeNft();
 
         vm.startPrank(user2);
         vm.expectRevert(StakingSystem.NotTokenOwner.selector);
@@ -113,12 +102,8 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_UnstakingRequestNotInitiated() public {
-        dNFT.safeMint(user1);
-
+        stakeNft();
         vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
-
         vm.warp(block.timestamp + 8 days);
         vm.expectRevert(StakingSystem.UnstakeRequestNotFound.selector);
         stakingSystem.unstake(0);
@@ -126,12 +111,9 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_UnstakingPeriodNotYetPassed() public {
-        dNFT.safeMint(user1);
+        stakeNft();
 
         vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
-
         stakingSystem.requestUnstake(0);
         vm.warp(block.timestamp + 2);
         vm.expectRevert(StakingSystem.UnstakingPeriodNotYetPassed.selector);
@@ -140,12 +122,9 @@ contract StakingSystemTest is Test {
     }
 
     function test_UnstakeAfterUnstakingPeriod() public {
-        dNFT.safeMint(user1);
+        stakeNft();
 
         vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
-
         stakingSystem.requestUnstake(0);
         vm.warp(block.timestamp + 7 days + 1); // Move forward in time
 
@@ -172,26 +151,16 @@ contract StakingSystemTest is Test {
     }
 
     function test_UpdateReward() public {
-        dNFT.safeMint(user1);
-
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-
-        stakingSystem.stake(0);
+        stakeNft();
 
         vm.warp(block.timestamp + 8 days); // Move forward in time
         vm.roll(100);
         uint256 reward = stakingSystem.updateReward(user1);
         assertEq(reward, 99 * 1e18, "Reward should be correctly calculated");
-
-        vm.stopPrank();
     }
 
     function test_ClaimReward() public {
-        dNFT.safeMint(user1);
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
+        stakeNft();
 
         vm.roll(100);
 
@@ -200,7 +169,13 @@ contract StakingSystemTest is Test {
         uint256 claimedReward = stakingSystem.userClaimedReward(user1);
 
         assertEq(claimedReward, 99 * 1e18);
+    }
 
+    function stakeNft() internal {
+        dNFT.safeMint(user1);
+        vm.startPrank(user1);
+        dNFT.approve(address(stakingSystem), 0);
+        stakingSystem.stake(0);
         vm.stopPrank();
     }
 }
