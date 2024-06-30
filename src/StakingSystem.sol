@@ -31,20 +31,30 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard {
         uint256 tokenDepositTime;
         uint256 tokenBlockNumber;
     }
-
+    struct UnstakeRequest {
+        uint256 requestTime;
+        bool requested;
+    }
     // Mappings
     mapping(uint256 => TokenData) public tokenIdMap;
     mapping(address => uint256[]) public userTokenIds;
     mapping(address => uint256) public userClaimedReward;
+    mapping(uint256 => UnstakeRequest) public unstakeRequests;
 
     // Events
     event Staked(address indexed owner, uint256 amount);
+    event UnstakeRequested(
+        address indexed owner,
+        uint256 tokenId,
+        uint256 requestTime
+    );
     event Unstaked(address indexed owner, uint256 amount);
 
     // Custom Errors
     error NotTokenOwner();
     error UnstakingPeriodNotYetPassed();
     error NoRewardsYet();
+    error UnstakeRequestNotFound();
 
     /**
      * @dev Initializes the contract setting the dNFT and rewardToken.
@@ -76,18 +86,38 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard {
         _stake(msg.sender, _tokenId);
     }
 
+    function requestUnstake(uint256 _tokenId) public nonReentrant {
+        TokenData memory tokenData = tokenIdMap[_tokenId];
+        if (tokenData.tokenOwner != msg.sender) {
+            revert NotTokenOwner();
+        }
+
+        unstakeRequests[_tokenId] = UnstakeRequest({
+            requestTime: block.timestamp,
+            requested: true
+        });
+
+        emit UnstakeRequested(msg.sender, _tokenId, block.timestamp);
+    }
+
     /**
      * @dev Unstakes a token.
      * @param _tokenId The ID of the token to unstake.
      */
     function unstake(uint256 _tokenId) public nonReentrant {
         TokenData memory tokenData = tokenIdMap[_tokenId];
+        UnstakeRequest memory unstakeRequest = unstakeRequests[_tokenId];
+
         if (tokenData.tokenOwner != msg.sender) {
             revert NotTokenOwner();
         }
-        if (block.timestamp - tokenData.tokenDepositTime <= UNSTAKING_PERIOD) {
+        if (!unstakeRequest.requested) {
+            revert UnstakeRequestNotFound();
+        }
+        if (block.timestamp - unstakeRequest.requestTime <= UNSTAKING_PERIOD) {
             revert UnstakingPeriodNotYetPassed();
         }
+
         claimReward(msg.sender);
         _unstake(msg.sender, _tokenId);
     }
@@ -111,7 +141,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard {
      * @dev Claims the reward for a user.
      * @param _user The address of the user.
      */
-    function claimReward(address _user) private {
+    function claimReward(address _user) public {
         uint256 reward = updateReward(_user);
 
         userClaimedReward[_user] += reward;
@@ -139,6 +169,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard {
      */
     function _unstake(address _user, uint256 _tokenId) internal {
         delete tokenIdMap[_tokenId];
+        delete unstakeRequests[_tokenId];
         uint256[] storage ids = userTokenIds[_user];
         uint256 idsLength = ids.length;
 
