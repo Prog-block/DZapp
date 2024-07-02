@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {StakingSystem} from "../src/StakingSystem.sol";
 import {RewardToken} from "../src/RewardToken.sol";
 import {DNFT} from "../src/DNFT.sol";
@@ -21,44 +21,93 @@ contract StakingSystemTest is Test {
         user2 = address(0x2);
 
         dNFT = new DNFT();
-        dNFT.transferOwnership(owner);
+        rewardToken = new RewardToken();
+        stakingSystem = new StakingSystem(dNFT, rewardToken);
 
-        stakingSystem = new StakingSystem(dNFT, new RewardToken());
+        dNFT.transferOwnership(owner);
+    }
+
+    function test_UpdateUnstakingPeriod() public {
+        uint256 newPeriod = 14 days;
+
+        vm.prank(owner);
+        stakingSystem.updateUnstakingPeriod(newPeriod);
+
+        assertEq(
+            stakingSystem.unstakingPeriod(),
+            newPeriod,
+            "Unstaking period should be updated"
+        );
+    }
+
+    function test_UpdateRewardRate() public {
+        uint256 newRate = 2 ether;
+
+        vm.prank(owner);
+        stakingSystem.updateRewardRate(newRate);
+
+        assertEq(
+            stakingSystem.rewardRate(),
+            newRate,
+            "Reward rate should be updated"
+        );
+    }
+
+    function test_GetUserStakedTokens() public {
+        stakeNft();
+
+        uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
+            user1
+        );
+        assertEq(stakedTokens.length, 1, "User1 should have 1 staked token");
+        assertEq(stakedTokens[0], 0, "Staked token ID should be 0");
+
+        dNFT.safeMint(user1);
+        vm.startPrank(user1);
+        dNFT.approve(address(stakingSystem), 1);
+        stakingSystem.stake(1);
+        vm.stopPrank();
+
+        stakedTokens = stakingSystem.getUserStakedTokens(user1);
+        assertEq(stakedTokens.length, 2, "User1 should have 2 staked tokens");
+        assertEq(stakedTokens[0], 0, "First staked token ID should be 0");
+        assertEq(stakedTokens[1], 1, "Second staked token ID should be 1");
     }
 
     function test_StakeAsTokenOwner() public {
         dNFT.safeMint(user1);
 
         assertEq(dNFT.ownerOf(0), user1, "Minted token should belong to user1");
+
         vm.startPrank(user1);
         dNFT.approve(address(stakingSystem), 0);
         vm.expectEmit(true, true, true, true);
         emit StakingSystem.Staked(user1, 0);
         stakingSystem.stake(0);
         vm.stopPrank();
+
         (
             address tokenOwner,
-            uint256 tokenDepositTime,
-            uint256 tokenBlockNumber
-        ) = stakingSystem.tokenIdMap(0);
+            uint256 stakedBlock,
+            uint256 unstakeRequestTime
+        ) = stakingSystem.tokenData(0);
+
         assertEq(tokenOwner, user1, "Token owner should be user1");
         assertEq(
-            tokenDepositTime,
-            block.timestamp,
-            "Deposit time should be current block timestamp"
-        );
-        assertEq(
-            tokenBlockNumber,
+            stakedBlock,
             block.number,
-            "Block number should be current block number"
+            "Staked block should be the current block number"
         );
+        assertEq(unstakeRequestTime, 0, "Unstake request time should be zero");
         assertEq(
             stakingSystem.stakedTotal(),
             1,
             "Total staked tokens should be 1"
         );
 
-        uint256[] memory stakedTokens = stakingSystem.getStakedTokenIds(user1);
+        uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
+            user1
+        );
         assertEq(stakedTokens.length, 1, "User1 should have 1 staked token");
         assertEq(stakedTokens[0], 0, "Staked token ID should be 0");
     }
@@ -72,14 +121,13 @@ contract StakingSystemTest is Test {
         stakingSystem.requestUnstake(0);
         vm.stopPrank();
 
-        (uint256 requestTime, bool requested) = stakingSystem.unstakeRequests(
-            0
-        );
-        assertTrue(requested, "Unstake request should be recorded");
+        (address tokenOwner, , uint256 unstakeRequestTime) = stakingSystem
+            .tokenData(0);
+        assertEq(tokenOwner, user1, "Token owner should be user1");
         assertEq(
-            requestTime,
+            unstakeRequestTime,
             block.timestamp,
-            "Request time should be set to current block timestamp"
+            "Unstake request time should be set to current block timestamp"
         );
     }
 
@@ -131,10 +179,9 @@ contract StakingSystemTest is Test {
         vm.expectEmit(true, true, true, true);
         emit StakingSystem.Unstaked(user1, 0);
         stakingSystem.unstake(0);
-
         vm.stopPrank();
 
-        (address tokenOwner, , ) = stakingSystem.tokenIdMap(1);
+        (address tokenOwner, , ) = stakingSystem.tokenData(0);
         assertEq(
             tokenOwner,
             address(0),
@@ -146,29 +193,21 @@ contract StakingSystemTest is Test {
             "Total staked tokens should be 0"
         );
 
-        uint256[] memory stakedTokens = stakingSystem.getStakedTokenIds(user1);
+        uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
+            user1
+        );
         assertEq(stakedTokens.length, 0, "User1 should have no staked tokens");
-    }
-
-    function test_UpdateReward() public {
-        stakeNft();
-
-        vm.warp(block.timestamp + 8 days); // Move forward in time
-        vm.roll(100);
-        uint256 reward = stakingSystem.updateReward(user1);
-        assertEq(reward, 99 * 1e18, "Reward should be correctly calculated");
     }
 
     function test_ClaimReward() public {
         stakeNft();
 
+        vm.warp(block.timestamp + 8 days); // Move forward in time
         vm.roll(100);
-
         stakingSystem.claimReward(user1);
 
-        uint256 claimedReward = stakingSystem.userClaimedReward(user1);
-
-        assertEq(claimedReward, 99 * 1e18);
+        uint256 reward = rewardToken.balanceOf(user1);
+        assertEq(reward, 99 * 1e18, "Reward should be correctly calculated");
     }
 
     function stakeNft() internal {

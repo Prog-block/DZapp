@@ -3,20 +3,16 @@ pragma solidity ^0.8.20;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
 import {RewardToken} from "./RewardToken.sol";
 import {DNFT} from "./DNFT.sol";
 
-contract StakingSystem is IERC721Receiver, ReentrancyGuard {
-    // Constants
-    uint256 public constant UNSTAKING_PERIOD = 7 days;
-    uint256 public constant TOKEN = 10e18;
-    uint256 public constant REWARD_RATE = 1 ether; // 1 RT per block
-
+/**
+ * @title StakingSystem
+ * @dev A contract for staking ERC721 tokens and earning rewards.
+ */
+contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
     // Immutable variables
     DNFT public immutable dNFT;
     RewardToken public immutable rewardToken;
@@ -24,192 +20,219 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard {
 
     // State variables
     uint256 public stakedTotal;
+    uint256 public unstakingPeriod = 7 days;
+    uint256 public rewardRate = 1 ether; // 1 RT per block
 
     // Structs
     struct TokenData {
         address tokenOwner;
-        uint256 tokenDepositTime;
-        uint256 tokenBlockNumber;
+        uint256 stakedBlock;
+        uint256 unstakeRequestTime;
     }
-    struct UnstakeRequest {
-        uint256 requestTime;
-        bool requested;
+
+    struct UserInfo {
+        uint256 lastClaimedBlock;
+        uint256 cumulativeReward;
+        uint256[] tokenIds;
     }
+
     // Mappings
-    mapping(uint256 => TokenData) public tokenIdMap;
-    mapping(address => uint256[]) public userTokenIds;
-    mapping(address => uint256) public userClaimedReward;
-    mapping(uint256 => UnstakeRequest) public unstakeRequests;
+    mapping(uint256 => TokenData) public tokenData;
+    mapping(address => UserInfo) private userInfo;
 
     // Events
-    event Staked(address indexed owner, uint256 amount);
+    event Staked(address indexed owner, uint256 tokenId);
     event UnstakeRequested(
         address indexed owner,
         uint256 tokenId,
         uint256 requestTime
     );
-    event Unstaked(address indexed owner, uint256 amount);
+    event Unstaked(address indexed owner, uint256 tokenId);
+    event RewardClaimed(address indexed user, uint256 reward);
 
     // Custom Errors
     error NotTokenOwner();
     error UnstakingPeriodNotYetPassed();
-    error NoRewardsYet();
     error UnstakeRequestNotFound();
 
     /**
-     * @dev Initializes the contract setting the dNFT and rewardToken.
-     * @param _dNFT The address of the dNFT contract.
-     * @param _rewardToken The address of the reward token contract.
+     * @dev Initializes the contract with DNFT and RewardToken instances.
+     * @param _dNFT The DNFT contract instance.
+     * @param _rewardToken The RewardToken contract instance.
      */
-    constructor(DNFT _dNFT, RewardToken _rewardToken) {
+    constructor(DNFT _dNFT, RewardToken _rewardToken) Ownable(msg.sender) {
         dNFT = _dNFT;
         rewardToken = _rewardToken;
         INITIAL_BLOCK_NUMBER = block.number;
     }
 
     /**
-     * @dev Returns the list of staked token IDs for a user.
-     * @param _user The address of the user.
+     * @dev Updates the unstaking period.
+     * @param _newPeriod The new unstaking period in seconds.
+     */
+    function updateUnstakingPeriod(uint256 _newPeriod) external onlyOwner {
+        unstakingPeriod = _newPeriod;
+    }
+
+    /**
+     * @dev Updates the reward rate.
+     * @param _newRate The new reward rate per block.
+     */
+    function updateRewardRate(uint256 _newRate) external onlyOwner {
+        rewardRate = _newRate;
+    }
+
+    /**
+     * @dev Gets the list of staked token IDs for a user.
+     * @param user The address of the user.
      * @return _tokenIds Array of staked token IDs.
      */
-    function getStakedTokenIds(
-        address _user
-    ) external view returns (uint256[] memory _tokenIds) {
-        return userTokenIds[_user];
+    function getUserStakedTokens(
+        address user
+    ) external view returns (uint256[] memory) {
+        return userInfo[user].tokenIds;
     }
 
     /**
-     * @dev Stakes a token.
-     * @param _tokenId The ID of the token to stake.
+     * @dev Stakes an ERC721 token.
+     * @param tokenId The ID of the token to stake.
      */
-    function stake(uint256 _tokenId) external nonReentrant {
-        _stake(msg.sender, _tokenId);
-    }
+    function stake(uint256 tokenId) external nonReentrant {
+        dNFT.safeTransferFrom(msg.sender, address(this), tokenId);
 
-    function requestUnstake(uint256 _tokenId) public nonReentrant {
-        TokenData memory tokenData = tokenIdMap[_tokenId];
-        if (tokenData.tokenOwner != msg.sender) {
-            revert NotTokenOwner();
-        }
-
-        unstakeRequests[_tokenId] = UnstakeRequest({
-            requestTime: block.timestamp,
-            requested: true
+        tokenData[tokenId] = TokenData({
+            tokenOwner: msg.sender,
+            stakedBlock: block.number,
+            unstakeRequestTime: 0
         });
 
-        emit UnstakeRequested(msg.sender, _tokenId, block.timestamp);
+        userInfo[msg.sender].tokenIds.push(tokenId);
+
+        stakedTotal++;
+        emit Staked(msg.sender, tokenId);
     }
 
     /**
-     * @dev Unstakes a token.
-     * @param _tokenId The ID of the token to unstake.
+     * @dev Requests to unstake an ERC721 token.
+     * @param tokenId The ID of the token to unstake.
      */
-    function unstake(uint256 _tokenId) public nonReentrant {
-        TokenData memory tokenData = tokenIdMap[_tokenId];
-        UnstakeRequest memory unstakeRequest = unstakeRequests[_tokenId];
+    function requestUnstake(uint256 tokenId) external {
+        TokenData storage data = tokenData[tokenId];
 
-        if (tokenData.tokenOwner != msg.sender) {
+        if (data.tokenOwner != msg.sender) {
             revert NotTokenOwner();
         }
-        if (!unstakeRequest.requested) {
+
+        data.unstakeRequestTime = block.timestamp;
+        emit UnstakeRequested(msg.sender, tokenId, block.timestamp);
+    }
+
+    /**
+     * @dev Unstakes an ERC721 token after the unstaking period has passed.
+     * @param tokenId The ID of the token to unstake.
+     */
+    function unstake(uint256 tokenId) external nonReentrant {
+        TokenData memory data = tokenData[tokenId];
+
+        if (data.tokenOwner != msg.sender) {
+            revert NotTokenOwner();
+        }
+        if (data.unstakeRequestTime == 0) {
             revert UnstakeRequestNotFound();
         }
-        if (block.timestamp - unstakeRequest.requestTime <= UNSTAKING_PERIOD) {
+        if (block.timestamp - data.unstakeRequestTime <= unstakingPeriod) {
             revert UnstakingPeriodNotYetPassed();
         }
 
         claimReward(msg.sender);
-        _unstake(msg.sender, _tokenId);
+        _unstake(tokenId);
     }
 
     /**
-     * @dev Updates the reward for a user.
-     * @param _user The address of the user.
-     * @return reward The updated reward amount.
+     * @dev Claims the accumulated reward for a user.
+     * @param claimer The address of the user claiming the reward.
      */
-    function updateReward(address _user) public view returns (uint256 reward) {
-        uint256[] memory ids = userTokenIds[_user];
-        for (uint256 i = 0; i < ids.length; i++) {
-            reward +=
-                (block.number - tokenIdMap[ids[i]].tokenBlockNumber) *
-                REWARD_RATE;
+    function claimReward(address claimer) public {
+        _updateReward(claimer);
+        uint256 reward = userInfo[claimer].cumulativeReward;
+
+        if (reward > 0) {
+            userInfo[claimer].cumulativeReward = 0;
+            rewardToken.mint(claimer, reward);
+            emit RewardClaimed(claimer, reward);
         }
-        reward -= userClaimedReward[_user];
     }
 
     /**
-     * @dev Claims the reward for a user.
-     * @param _user The address of the user.
+     * @dev Updates the reward accumulation for a user.
+     * @param user The address of the user.
      */
-    function claimReward(address _user) public {
-        uint256 reward = updateReward(_user);
-
-        userClaimedReward[_user] += reward;
-        rewardToken.mint(_user, reward);
+    function _updateReward(address user) internal {
+        uint256 reward = _calculateReward(user);
+        if (reward > 0) {
+            userInfo[user].cumulativeReward += reward;
+            userInfo[user].lastClaimedBlock = block.number;
+        }
     }
 
     /**
-     * @dev Internal function to stake a token.
-     * @param _user The address of the user.
-     * @param _tokenId The ID of the token to stake.
+     * @dev Calculates the pending reward for a user.
+     * @param user The address of the user.
+     * @return reward The pending reward amount.
      */
-    function _stake(address _user, uint256 _tokenId) internal {
-        dNFT.safeTransferFrom(_user, address(this), _tokenId);
+    function _calculateReward(address user) internal view returns (uint256) {
+        uint256 reward = 0;
+        UserInfo memory userDetail = userInfo[user];
+        uint256 lastClaimed = userDetail.lastClaimedBlock;
+        uint256 currentBlock = block.number;
+        uint256 tokenIdsLength = userDetail.tokenIds.length;
 
-        tokenIdMap[_tokenId] = TokenData(_user, block.timestamp, block.number);
-        userTokenIds[_user].push(_tokenId);
-        emit Staked(_user, _tokenId);
-        stakedTotal++;
-    }
+        for (uint256 i = 0; i < tokenIdsLength; ) {
+            uint256 tokenId = userDetail.tokenIds[i];
+            uint256 startBlock = tokenData[tokenId].stakedBlock > lastClaimed
+                ? tokenData[tokenId].stakedBlock
+                : lastClaimed;
+            reward += (currentBlock - startBlock) * rewardRate;
 
-    /**
-     * @dev Internal function to unstake a token.
-     * @param _user The address of the user.
-     * @param _tokenId The ID of the token to unstake.
-     */
-    function _unstake(address _user, uint256 _tokenId) internal {
-        delete tokenIdMap[_tokenId];
-        delete unstakeRequests[_tokenId];
-        uint256[] storage ids = userTokenIds[_user];
-        uint256 idsLength = ids.length;
-
-        for (uint i; i < idsLength; i++) {
-            if (ids[i] == _tokenId) {
-                // Swap the element with the last element
-                ids[i] = ids[idsLength - 1];
-                // Remove the last element
-                ids.pop();
+            unchecked {
+                i++;
             }
         }
-        stakedTotal--;
 
-        dNFT.safeTransferFrom(address(this), _user, _tokenId);
-
-        emit Unstaked(_user, _tokenId);
+        return reward;
     }
 
-    // function stakeBatch(uint256[] memory tokenIds) external nonReentrant {
-    //     for (uint256 i = 0; i < tokenIds.length; i++) {
-    //         _stake(msg.sender, tokenIds[i]);
-    //     }
-    // }
+    /**
+     * @dev Performs the unstaking of an ERC721 token.
+     * @param tokenId The ID of the token to unstake.
+     */
+    function _unstake(uint256 tokenId) private nonReentrant{
+        address user = tokenData[tokenId].tokenOwner;
 
-    // function unstakeBatch(uint256[] memory tokenIds) public {
-    //     for (uint256 i = 0; i < tokenIds.length; i++) {
-    //         if (tokenOwner[tokenIds[i]] == msg.sender) {
-    //             _unstake(msg.sender, tokenIds[i]);
-    //             claimReward(msg.sender, tokenIds[i]);
-    //         }
-    //     }
-    // }
+        uint256[] memory tokens = userInfo[user].tokenIds;
+        uint256 tokensLength = tokens.length;
 
-    // function unstakeAll() public {
-    //     uint256[] memory tokenIds = stakers[msg.sender].tokenIds;
-    //     for (uint256 i = 0; i < tokenIds.length; i++) {
-    //         _unstake(msg.sender, tokenIds[i]);
-    //     }
-    //     claimReward(msg.sender);
-    // }
+        for (uint256 i = 0; i < tokensLength; ) {
+            if (tokens[i] == tokenId) {
+                userInfo[user].tokenIds[i] = tokens[tokens.length - 1];
+                userInfo[user].tokenIds.pop();
+                break;
+            }
+            unchecked {
+                i++;
+            }
+        }
+
+        delete tokenData[tokenId];
+        stakedTotal--;
+
+        dNFT.safeTransferFrom(address(this), user, tokenId);
+        emit Unstaked(user, tokenId);
+    }
+
+    /**
+     * @dev Standard ERC721 receiver function.
+     */
     function onERC721Received(
         address,
         address,
