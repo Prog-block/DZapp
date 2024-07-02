@@ -97,7 +97,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
      * @dev Stakes an ERC721 token.
      * @param tokenId The ID of the token to stake.
      */
-    function stake(uint256 tokenId) external nonReentrant {
+    function stake(uint256 tokenId) external {
         dNFT.safeTransferFrom(msg.sender, address(this), tokenId);
 
         tokenData[tokenId] = TokenData({
@@ -131,7 +131,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
      * @dev Unstakes an ERC721 token after the unstaking period has passed.
      * @param tokenId The ID of the token to unstake.
      */
-    function unstake(uint256 tokenId) external nonReentrant {
+    function unstake(uint256 tokenId) external {
         TokenData memory data = tokenData[tokenId];
 
         if (data.tokenOwner != msg.sender) {
@@ -206,7 +206,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
      * @dev Performs the unstaking of an ERC721 token.
      * @param tokenId The ID of the token to unstake.
      */
-    function _unstake(uint256 tokenId) private nonReentrant{
+    function _unstake(uint256 tokenId) private nonReentrant {
         address user = tokenData[tokenId].tokenOwner;
 
         uint256[] memory tokens = userInfo[user].tokenIds;
