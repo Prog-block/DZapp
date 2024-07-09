@@ -38,7 +38,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
 
     // Mappings
     mapping(uint256 => TokenData) public tokenData;
-    mapping(address => UserInfo) private userInfo;
+    mapping(address => UserInfo) public userInfo;
 
     // Events
     event Staked(address indexed owner, uint256 tokenId);

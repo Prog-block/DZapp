@@ -28,6 +28,12 @@ contract StakingSystemTest is Test {
     }
 
     function test_UpdateUnstakingPeriod() public {
+        assertEq(
+            stakingSystem.unstakingPeriod(),
+            7 days,
+            "Unstaking period should be updated"
+        );
+
         uint256 newPeriod = 14 days;
 
         vm.prank(owner);
@@ -41,6 +47,12 @@ contract StakingSystemTest is Test {
     }
 
     function test_UpdateRewardRate() public {
+        assertEq(
+            stakingSystem.rewardRate(),
+            1 ether,
+            "Reward rate should be updated"
+        );
+
         uint256 newRate = 2 ether;
 
         vm.prank(owner);
@@ -54,24 +66,13 @@ contract StakingSystemTest is Test {
     }
 
     function test_GetUserStakedTokens() public {
-        stakeNft();
-
+        stakeNft(0);
         uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
             user1
         );
+
         assertEq(stakedTokens.length, 1, "User1 should have 1 staked token");
         assertEq(stakedTokens[0], 0, "Staked token ID should be 0");
-
-        dNFT.safeMint(user1);
-        vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 1);
-        stakingSystem.stake(1);
-        vm.stopPrank();
-
-        stakedTokens = stakingSystem.getUserStakedTokens(user1);
-        assertEq(stakedTokens.length, 2, "User1 should have 2 staked tokens");
-        assertEq(stakedTokens[0], 0, "First staked token ID should be 0");
-        assertEq(stakedTokens[1], 1, "Second staked token ID should be 1");
     }
 
     function test_StakeAsTokenOwner() public {
@@ -108,12 +109,21 @@ contract StakingSystemTest is Test {
         uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
             user1
         );
-        assertEq(stakedTokens.length, 1, "User1 should have 1 staked token");
-        assertEq(stakedTokens[0], 0, "Staked token ID should be 0");
+        assertEq(stakedTokens.length, 1, "User1 should have 2 staked tokens");
+        assertEq(stakedTokens[0], 0, "First staked token ID should be 0");
     }
 
     function test_RequestUnstake() public {
-        stakeNft();
+        stakeNft(0);
+
+        vm.stopPrank();
+        (, , uint256 unstakeRequestTimeBefore) = stakingSystem.tokenData(0);
+
+        assertEq(
+            unstakeRequestTimeBefore,
+            0,
+            "Unstake request time should be set to current block timestamp"
+        );
 
         vm.startPrank(user1);
         vm.expectEmit(true, true, true, true);
@@ -121,18 +131,17 @@ contract StakingSystemTest is Test {
         stakingSystem.requestUnstake(0);
         vm.stopPrank();
 
-        (address tokenOwner, , uint256 unstakeRequestTime) = stakingSystem
-            .tokenData(0);
-        assertEq(tokenOwner, user1, "Token owner should be user1");
+        (, , uint256 unstakeRequestTimeAfter) = stakingSystem.tokenData(0);
+
         assertEq(
-            unstakeRequestTime,
+            unstakeRequestTimeAfter,
             block.timestamp,
             "Unstake request time should be set to current block timestamp"
         );
     }
 
-    function test_RequestUnstake_NotTokenOwner() public {
-        stakeNft();
+    function test_RevertRequestUnstake_NotTokenOwner() public {
+        stakeNft(0);
 
         vm.startPrank(user2);
         vm.expectRevert(StakingSystem.NotTokenOwner.selector);
@@ -141,7 +150,7 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_NotTokenOwner() public {
-        stakeNft();
+        stakeNft(0);
 
         vm.startPrank(user2);
         vm.expectRevert(StakingSystem.NotTokenOwner.selector);
@@ -150,7 +159,7 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_UnstakingRequestNotInitiated() public {
-        stakeNft();
+        stakeNft(0);
         vm.startPrank(user1);
         vm.warp(block.timestamp + 8 days);
         vm.expectRevert(StakingSystem.UnstakeRequestNotFound.selector);
@@ -159,7 +168,7 @@ contract StakingSystemTest is Test {
     }
 
     function test_RevertUnstakeWhen_UnstakingPeriodNotYetPassed() public {
-        stakeNft();
+        stakeNft(0);
 
         vm.startPrank(user1);
         stakingSystem.requestUnstake(0);
@@ -170,37 +179,46 @@ contract StakingSystemTest is Test {
     }
 
     function test_UnstakeAfterUnstakingPeriod() public {
-        stakeNft();
+        stakeNft(0);
+        stakeNft(1);
 
         vm.startPrank(user1);
         stakingSystem.requestUnstake(0);
-        vm.warp(block.timestamp + 7 days + 1); // Move forward in time
+        vm.warp(block.timestamp + 8 days); // Move forward in time
+
+        (address tokenOwnerBefore, , ) = stakingSystem.tokenData(0);
+        assertEq(tokenOwnerBefore, user1, "Token owner should user1");
+        assertEq(
+            stakingSystem.stakedTotal(),
+            2,
+            "Total staked tokens should be 2"
+        );
 
         vm.expectEmit(true, true, true, true);
         emit StakingSystem.Unstaked(user1, 0);
         stakingSystem.unstake(0);
         vm.stopPrank();
 
-        (address tokenOwner, , ) = stakingSystem.tokenData(0);
+        (address tokenOwnerAfter, , ) = stakingSystem.tokenData(0);
         assertEq(
-            tokenOwner,
+            tokenOwnerAfter,
             address(0),
             "Token owner should be reset to address(0)"
         );
         assertEq(
             stakingSystem.stakedTotal(),
-            0,
+            1,
             "Total staked tokens should be 0"
         );
 
         uint256[] memory stakedTokens = stakingSystem.getUserStakedTokens(
             user1
         );
-        assertEq(stakedTokens.length, 0, "User1 should have no staked tokens");
+        assertEq(stakedTokens.length, 1, "User1 should have 2 staked tokens");
     }
 
     function test_ClaimReward() public {
-        stakeNft();
+        stakeNft(0);
 
         vm.warp(block.timestamp + 8 days); // Move forward in time
         vm.roll(100);
@@ -208,13 +226,27 @@ contract StakingSystemTest is Test {
 
         uint256 reward = rewardToken.balanceOf(user1);
         assertEq(reward, 99 * 1e18, "Reward should be correctly calculated");
+
+        (uint256 lastClaimedBlock, uint256 cumulativeReward) = stakingSystem
+            .userInfo(user1);
+
+        assertEq(
+            lastClaimedBlock,
+            block.number,
+            "Last claimed block should be updated"
+        );
+        assertEq(
+            cumulativeReward,
+            0,
+            "Cumulative reward should be reset to zero"
+        );
     }
 
-    function stakeNft() internal {
+    function stakeNft(uint256 i) internal {
         dNFT.safeMint(user1);
         vm.startPrank(user1);
-        dNFT.approve(address(stakingSystem), 0);
-        stakingSystem.stake(0);
+        dNFT.approve(address(stakingSystem), i);
+        stakingSystem.stake(i);
         vm.stopPrank();
     }
 }
