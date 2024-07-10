@@ -14,8 +14,8 @@ import {DNFT} from "./DNFT.sol";
  */
 contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
     // Immutable variables
-    DNFT public immutable dNFT;
-    RewardToken public immutable rewardToken;
+    DNFT public immutable D_NFT;
+    RewardToken public immutable REWARD_TOKEN;
     uint256 public immutable INITIAL_BLOCK_NUMBER;
 
     // State variables
@@ -61,8 +61,8 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
      * @param _rewardToken The RewardToken contract instance.
      */
     constructor(DNFT _dNFT, RewardToken _rewardToken) Ownable(msg.sender) {
-        dNFT = _dNFT;
-        rewardToken = _rewardToken;
+        D_NFT = _dNFT;
+        REWARD_TOKEN = _rewardToken;
         INITIAL_BLOCK_NUMBER = block.number;
     }
 
@@ -98,7 +98,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
      * @param tokenId The ID of the token to stake.
      */
     function stake(uint256 tokenId) external {
-        dNFT.safeTransferFrom(msg.sender, address(this), tokenId);
+        D_NFT.safeTransferFrom(msg.sender, address(this), tokenId);
 
         tokenData[tokenId] = TokenData({
             tokenOwner: msg.sender,
@@ -158,7 +158,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
 
         if (reward > 0) {
             userInfo[claimer].cumulativeReward = 0;
-            rewardToken.mint(claimer, reward);
+            REWARD_TOKEN.mint(claimer, reward);
             emit RewardClaimed(claimer, reward);
         }
     }
@@ -226,7 +226,7 @@ contract StakingSystem is IERC721Receiver, ReentrancyGuard, Ownable {
         delete tokenData[tokenId];
         stakedTotal--;
 
-        dNFT.safeTransferFrom(address(this), user, tokenId);
+        D_NFT.safeTransferFrom(address(this), user, tokenId);
         emit Unstaked(user, tokenId);
     }
 
